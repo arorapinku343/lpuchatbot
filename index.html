@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Mini Chatbot (Single File)</title>
+<style>
+  :root {
+    --bg: #f7f8fb;
+    --container: #ffffff;
+    --user: #cfe9ff;
+    --bot: #eef2f6;
+    --muted: #6c7480;
+    --accent: #3478f6;
+    --radius: 12px;
+    font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+  }
+  body { background: var(--bg); margin:0; padding:20px; display:flex; justify-content:center; }
+  .panel { width:100%; max-width:820px; background:var(--container); border-radius:16px; box-shadow:0 6px 24px rgba(30,40,60,0.06); padding:18px; }
+  h1 { margin:0 0 10px 0; font-size:20px; }
+  #chat { height:440px; overflow:auto; border-radius:12px; padding:16px; background:linear-gradient(180deg,#fbfdff, #f1f6fb); border:1px solid #e6eef8; }
+  .msg { display:inline-block; padding:10px 12px; margin:8px 0; border-radius:12px; max-width:78%; line-height:1.25; }
+  .user { background:var(--user); margin-left:auto; text-align:right; border-bottom-right-radius:4px; }
+  .bot  { background:var(--bot); margin-right:auto; text-align:left; border-bottom-left-radius:4px; }
+  .meta { font-size:11px; color:var(--muted); margin-top:6px; }
+  #controls { display:flex; gap:8px; margin-top:12px; }
+  #input { flex:1; min-height:44px; padding:10px 12px; border-radius:10px; border:1px solid #d9e6ff; font-size:15px; }
+  button { background:var(--accent); color:white; border:none; padding:10px 14px; border-radius:10px; cursor:pointer; }
+  button.secondary { background:#eef2f6; color:#2b3a4a; border:1px solid #dbe7f7; }
+  .controls-row { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-top:12px; }
+  .small { font-size:13px; color:var(--muted); }
+  .typing { font-style:italic; color:var(--muted); padding:6px 8px; }
+  .actions { display:flex; gap:8px; }
+  @media (max-width:520px){ #chat{height:340px} }
+</style>
+</head>
+<body>
+  <div class="panel" role="main">
+    <h1>Mini Chatbot — Single File</h1>
+    <div id="chat" aria-live="polite" aria-atomic="false"></div>
+
+    <div id="controls">
+      <div style="flex:1;">
+        <div contenteditable="true" id="input" role="textbox" aria-label="Type your message" placeholder="Type a message (try: remember this: buy milk)"></div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <button id="send">Send</button>
+        <button id="clear" class="secondary" title="Clear visible chat">Clear</button>
+      </div>
+    </div>
+
+    <div class="controls-row">
+      <div class="small">Session stored locally. Messages persist across refresh.</div>
+      <div class="actions">
+        <button id="export" class="secondary" title="Download chat as text">Export</button>
+        <button id="reset" class="secondary" title="Forget remembered notes">Reset Memory</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  // ---------- Utilities ----------
+  const $ = id => document.getElementById(id);
+  const chatEl = $('chat');
+  const inputEl = $('input');
+  const sendBtn = $('send');
+  const clearBtn = $('clear');
+  const exportBtn = $('export');
+  const resetBtn = $('reset');
+
+  const STORAGE_KEY = 'mini_chat_history_v1';
+  const MEM_KEY = 'mini_chat_notes_v1';
+
+  function nowISO() { return new Date().toISOString(); }
+  function formatTime(iso) {
+    const d = new Date(iso);
+    return d.toLocaleString();
+  }
+
+  function saveHistory(history) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
+  }
+  function loadHistory() {
+    try {
+      return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+    } catch(e) { return []; }
+  }
+  function saveNotes(notes) { localStorage.setItem(MEM_KEY, JSON.stringify(notes)); }
+  function loadNotes() { try { return JSON.parse(localStorage.getItem(MEM_KEY) || '[]'); } catch(e){ return []; } }
+
+  // ---------- Rendering ----------
+  function appendBubble(text, who='bot', ts=null, meta=null) {
+    const wrap = document.createElement('div');
+    const bubble = document.createElement('div');
+    bubble.className = 'msg ' + (who==='user' ? 'user' : 'bot');
+    bubble.textContent = text;
+    wrap.appendChild(bubble);
+    if (meta || ts) {
+      const m = document.createElement('div');
+      m.className = 'meta';
+      m.textContent = (meta ? meta + ' · ' : '') + (ts ? formatTime(ts) : '');
+      wrap.appendChild(m);
+    }
+    chatEl.appendChild(wrap);
+    chatEl.scrollTop = chatEl.scrollHeight;
+  }
+
+  function showTyping() {
+    const t = document.createElement('div');
+    t.className = 'typing meta';
+    t.id = '__typing';
+    t.textContent = 'Bot is typing...';
+    chatEl.appendChild(t);
+    chatEl.scrollTop = chatEl.scrollHeight;
+  }
+  function hideTyping() {
+    const t = document.getElementById('__typing');
+    if (t) t.remove();
+  }
+
+  // ---------- Bot logic (rule-based with tiny memory) ----------
+  // memory: array of notes (strings)
+  let memory = loadNotes();
+
+  // small intent/responses
+  function ruleReply(userText, lastHistory) {
+    const text = (userText || '').trim();
+    const tl = text.toLowerCase();
+
+    // greetings
+    if (/\b(cdp upload report|cdp pathway|cdp report pathway|cdp report|cdp)\b/.test(tl)) {
+      return "Community Development, summer Internships and OJT Report upload via UMS link-- Academics-->Project/Dissertation-->Upload Research Project/Internship Certificate--->Internship Report with Certificate option.";
+    }
+    if (/\b(st report last date|st last date|st upload date|st uploading last date|st report last date)\b/.test(tl)) {
+      return "Last day of Uploading the report is 20th September 2025";
+    }
+    if (/\b(R grade|r grade|r grade registration|r registration|reappear r grade|R PROJECT course|r)\b/.test(tl)) {
+      return "R grade registrations open twice every year. First in month of Feburary and then in the month of August every year. R grade registration fee is 1000/- without any late fee and 3000/- with a late fee of 2000/-. UMS announcement and student UMS notification are sent to each student for R grade registrations. There is only 1 R grade chance in Capstone/Dissertation courses where as 3 chances in case of Summer Internship/Community Development Project/On the Job Training.";
+    }
+    // help
+    if (tl.includes('help')) {
+      return "I understand simple commands:\n• remember this: <note>\n• what did i tell you\n• reset memory\nYou can also say hello.";
+    }
+    // remember command
+    const m = tl.match(/^remember this:\s*(.+)/i);
+    if (m) {
+      const note = m[1].trim();
+      memory.push({note, time: nowISO()});
+      saveNotes(memory);
+      return `Okay — I'll remember: "${note}"`;
+    }
+    // show memory
+    if (tl.includes('what did i tell') || tl.includes('what did i say') || tl === 'memory' || tl.includes('remembered')) {
+      if (memory.length === 0) return "You haven't asked me to remember anything yet.";
+      return "You asked me to remember:\n" + memory.map((n,i)=> `${i+1}. ${n.note} (${formatTime(n.time)})`).join('\n');
+    }
+    // small talk
+    if (tl.includes('how are you')) return "I'm a small script — feeling speedy! ⚡";
+    if (tl.includes('time') && tl.includes('now')) return `It's ${formatTime(nowISO())}.`;
+    // fallback: echo + context-aware (if lastHistory exists)
+    if (lastHistory) {
+      return `Earlier you said: "${lastHistory.user}" — now: "${userText}"`;
+    }
+    return `I heard: "${userText}"`;
+  }
+
+  // ---------- Persistence ----------
+  function pushHistory(entry) {
+    const hist = loadHistory();
+    hist.push(entry);
+    saveHistory(hist);
+  }
+
+  function renderFullHistory() {
+    chatEl.innerHTML = '';
+    const hist = loadHistory();
+    hist.forEach(h => {
+      if (h.type === 'user') appendBubble(h.text, 'user', h.time);
+      else appendBubble(h.text, 'bot', h.time);
+    });
+  }
+
+  // ---------- Actions ----------
+  async function sendMessage() {
+    const text = inputEl.textContent.trim();
+    if (!text) return;
+    const ts = nowISO();
+    appendBubble(text, 'user', ts);
+    pushHistory({type:'user', text, time:ts});
+    inputEl.textContent = '';
+    // typing indicator
+    showTyping();
+
+    // simulate processing delay
+    await new Promise(r => setTimeout(r, 450 + Math.random()*400));
+
+    hideTyping();
+    // compute reply using last user from history
+    const hist = loadHistory();
+    // find last user message before this (excluding the one we just added)
+    let lastUser = null;
+    for (let i=hist.length-1;i>=0;i--) if (hist[i].type==='user' && hist[i].text!==text){ lastUser = hist[i]; break; }
+
+    const reply = ruleReply(text, lastUser);
+    const rts = nowISO();
+    appendBubble(reply, 'bot', rts);
+    pushHistory({type:'bot', text:reply, time:rts});
+  }
+
+  // Export chat as .txt
+  function exportChat() {
+    const hist = loadHistory();
+    if (!hist.length) { alert('No chat to export'); return; }
+    const lines = hist.map(h => `[${formatTime(h.time)}] ${h.type.toUpperCase()}: ${h.text}`);
+    const blob = new Blob([lines.join('\\n')], {type:'text/plain'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'chat_export.txt';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  // ---------- Event wiring ----------
+  sendBtn.addEventListener('click', sendMessage);
+  clearBtn.addEventListener('click', ()=> { chatEl.innerHTML=''; });
+  exportBtn.addEventListener('click', exportChat);
+  resetBtn.addEventListener('click', ()=> {
+    if (!confirm('This will erase remembered notes (memory). Continue?')) return;
+    memory = [];
+    saveNotes(memory);
+    alert('Memory cleared.');
+  });
+
+  // hit Enter to send (Shift+Enter for newline)
+  inputEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  });
+
+  // init render
+  renderFullHistory();
+
+  // placeholder text behavior for contenteditable
+  function ensurePlaceholder() {
+    if (!inputEl.textContent.trim()) { inputEl.setAttribute('data-empty', 'true'); inputEl.style.color='#8894a6'; inputEl.textContent = ''; }
+    inputEl.style.minHeight = '44px';
+  }
+  ensurePlaceholder();
+
+  // make sure contenteditable is focusable and accessible
+  inputEl.setAttribute('role','textbox');
+  inputEl.setAttribute('aria-multiline','true');
+
+})();
+</script>
+</body>
+</html>
